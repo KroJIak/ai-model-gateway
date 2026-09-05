@@ -32,6 +32,47 @@ CACHE_TTL = float(os.getenv('BRIDGE_CACHE_TTL', '30'))
 HOST = os.getenv('HOST', '0.0.0.0')
 PORT = int(os.getenv('PORT', '8080'))
 API_AUTH_KEY = os.getenv('BRIDGE_API_KEY', '')
+TOOLS_STATE_PATH = os.getenv('TOOLS_STATE_PATH', '/app/data/tools_state.json')
+TOOLS_RETRY_TTL = float(os.getenv('TOOLS_RETRY_TTL_DAYS', '7')) * 86400
+
+
+def _load_tools_state():
+    try:
+        with open(TOOLS_STATE_PATH, encoding='utf-8') as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_tools_state(state):
+    os.makedirs(os.path.dirname(TOOLS_STATE_PATH), exist_ok=True)
+    with open(TOOLS_STATE_PATH, 'w', encoding='utf-8') as f:
+        json.dump(state, f)
+
+
+def _tools_marked(model_id):
+    state = _load_tools_state()
+    mark = state.get(model_id)
+    if not mark:
+        return False
+    if mark.get('until', 0) <= time.time():
+        state.pop(model_id)
+        _save_tools_state(state)
+        return False
+    return True
+
+
+def _mark_tools_failed(model_id):
+    state = _load_tools_state()
+    state[model_id] = {'until': time.time() + TOOLS_RETRY_TTL, 'at': int(time.time())}
+    _save_tools_state(state)
+
+
+def _clear_tools_mark(model_id):
+    state = _load_tools_state()
+    if model_id in state:
+        state.pop(model_id)
+        _save_tools_state(state)
 CLIENT_TIMEOUT = httpx.Timeout(
     connect=10.0,
     read=float(os.getenv('BRIDGE_READ_TIMEOUT', '600')),
@@ -222,21 +263,29 @@ async def chat_completions(request: Request):
     client = _state['client']
 
     tool_payload = 'tools' in payload or 'tool_choice' in payload
+    tools_blocked = tool_payload and _tools_marked(model_id)
 
-    async def _stream_attempt(body):
+    async def _attempt(body):
         upstream = client.build_request('POST', url, json=body, headers=headers)
         return await client.send(upstream, stream=True)
 
     try:
         if body.get('stream'):
-            resp = await _stream_attempt(payload)
-            fallback = False
-            # Не все каналы переваривают инструменты: повторяем без них.
+            attempt = (
+                {k: v for k, v in payload.items() if k not in ('tools', 'tool_choice')}
+                if tools_blocked else payload
+            )
+            resp = await _attempt(attempt)
+            fallback = tools_blocked
+            # Канал не переварил инструменты: запоминаем на TTL и повторяем без них.
             if resp.status_code >= 400 and tool_payload:
+                _mark_tools_failed(model_id)
                 await resp.aclose()
                 stripped = {k: v for k, v in payload.items() if k not in ('tools', 'tool_choice')}
-                resp = await _stream_attempt(stripped)
+                resp = await _attempt(stripped)
                 fallback = True
+            elif resp.status_code < 400 and tool_payload:
+                _clear_tools_mark(model_id)  # канал принимает tools — пометка не нужна
             if resp.status_code >= 400:
                 raw = (await resp.aread()).decode(errors='replace')[:400]
                 await resp.aclose()
@@ -256,9 +305,21 @@ async def chat_completions(request: Request):
                 media_type=resp.headers.get('content-type', 'text/event-stream'),
                 headers=extra_headers,
             )
-        stripped_payload = {k: v for k, v in payload.items() if k not in ('tools', 'tool_choice')}
-        resp = await client.post(url, json=stripped_payload, headers=headers)
-        fallback = 'tools' in payload
+
+        attempt = (
+            {k: v for k, v in payload.items() if k not in ('tools', 'tool_choice')}
+            if tools_blocked else payload
+        )
+        resp = await client.post(url, json=attempt, headers=headers)
+        fallback = tools_blocked
+        # Канал не переварил инструменты: запоминаем на TTL и повторяем без них.
+        if resp.status_code >= 400 and tool_payload:
+            _mark_tools_failed(model_id)
+            stripped = {k: v for k, v in payload.items() if k not in ('tools', 'tool_choice')}
+            resp = await client.post(url, json=stripped, headers=headers)
+            fallback = True
+        elif resp.status_code < 400 and tool_payload:
+            _clear_tools_mark(model_id)  # канал принимает tools — пометка не нужна
     except httpx.HTTPError as exc:
         return JSONResponse(
             {'error': {
@@ -279,6 +340,7 @@ async def chat_completions(request: Request):
     result = json.loads(resp.content)
     if fallback:
         result['bridge'] = {'fallback': 'tools_stripped'}
+    return JSONResponse(result)
     return JSONResponse(result)
 
 
