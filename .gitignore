@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+config.yaml
+grok-cli-api/grok-unleashed-linux-x86_64

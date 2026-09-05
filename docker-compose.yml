@@ -1,0 +1,68 @@
+# Два сервиса: gpt-api (CLIProxyAPI — GPT-семейство) и grok-cli-api
+# (Grok Build CLI — все остальные модели). Мост агрегирует их в один
+# OpenAI-совместимый endpoint для Open WebUI.
+#
+# Внешние порты: см. docker-compose.override.yml (опционально).
+
+services:
+  # GPT-семейство: CLIProxyAPI поверх любого OpenAI-совместимого релея.
+  # Мост берёт из этого бэкенда только модели gpt-*.
+  gpt-api:
+    image: eceasy/cli-proxy-api:v7.2.149
+    container_name: gpt-api
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    environment:
+      - API_ROLE=gpt
+      - API_PORT=8317
+      - API_KEYS=${GPT_API_KEYS:?set in .env}
+      - PROVIDER_BASE_URL=${GPT_PROVIDER_BASE_URL:?set in .env}
+      - PROVIDER_API_KEY=${GPT_PROVIDER_API_KEY:?set in .env}
+    volumes:
+      - ./docker/cli-proxy-entrypoint.sh:/entrypoint.sh:ro
+      - gpt-api-auth:/root/.cli-proxy-api
+      - gpt-api-logs:/CLIProxyAPI/logs
+    restart: unless-stopped
+
+  # Универсальный CLI-сервис (Grok Build CLI + полный каталог провайдера).
+  # Обслуживает все остальные модели: grok, gemini, китайские и т.д.
+  grok-cli-api:
+    build: ./grok-cli-api
+    container_name: grok-cli-api
+    environment:
+      - GROK_BIN=/usr/local/bin/grok
+      - GROK_CONFIG_DIR=/data/.grok
+      - GROK_BASE_URL=${GROK_BASE_URL:?set in .env}
+      - GROK_API_KEY=${GROK_API_KEY:?set in .env}
+      - GROK_DEFAULT_MODEL=${GROK_DEFAULT_MODEL:-grok-4.6}
+      - GROK_MODELS_TTL=${GROK_MODELS_TTL:-60}
+      - NODE_OPTIONS=--dns-result-order=ipv4first
+      - GROK_API_TIMEOUT=${GROK_API_TIMEOUT:-240}
+      - API_AUTH_KEY=${GROK_API_AUTH_KEY:-}
+      - HOST=0.0.0.0
+      - PORT=8090
+    volumes:
+      - grok-config:/data/.grok
+    restart: unless-stopped
+
+  # Мост: единый OpenAI-совместимый endpoint для Open WebUI.
+  model-bridge:
+    build:
+      context: .
+      dockerfile: bridge/Dockerfile
+    container_name: model-bridge
+    environment:
+      - BRIDGE_CONFIG=/app/config.yaml
+      - BRIDGE_CACHE_TTL=${BRIDGE_CACHE_TTL:-30}
+      - GPT_API_BASE_URL=${GPT_API_BASE_URL:-http://gpt-api:8317}
+      - GPT_API_KEYS=${GPT_API_KEYS:-}
+      - BRIDGE_API_KEY=${BRIDGE_API_KEY:-}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+
+volumes:
+  gpt-api-auth:
+  gpt-api-logs:
+  grok-config:
