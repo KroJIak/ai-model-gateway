@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 import httpx
 import uvicorn
 import yaml
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 CONFIG_PATH = os.getenv('BRIDGE_CONFIG', 'config.yaml')
@@ -221,12 +221,22 @@ async def chat_completions(request: Request):
     url = f"{backend['base_url']}/chat/completions"
     client = _state['client']
 
+    tool_payload = 'tools' in payload or 'tool_choice' in payload
+
+    async def _stream_attempt(body):
+        upstream = client.build_request('POST', url, json=body, headers=headers)
+        return await client.send(upstream, stream=True)
+
     try:
         if body.get('stream'):
-            upstream = client.build_request(
-                'POST', url, json=payload, headers=headers
-            )
-            resp = await client.send(upstream, stream=True)
+            resp = await _stream_attempt(payload)
+            fallback = False
+            # Не все каналы переваривают инструменты: повторяем без них.
+            if resp.status_code >= 400 and tool_payload:
+                await resp.aclose()
+                stripped = {k: v for k, v in payload.items() if k not in ('tools', 'tool_choice')}
+                resp = await _stream_attempt(stripped)
+                fallback = True
             if resp.status_code >= 400:
                 raw = (await resp.aread()).decode(errors='replace')[:400]
                 await resp.aclose()
@@ -237,13 +247,18 @@ async def chat_completions(request: Request):
                     }},
                     status_code=max(resp.status_code, 500),
                 )
+            extra_headers = {'X-Bridge-Backend': backend['name']}
+            if fallback:
+                extra_headers['X-Bridge-Fallback'] = 'tools-stripped'
             return StreamingResponse(
                 resp.aiter_raw(),
                 status_code=resp.status_code,
                 media_type=resp.headers.get('content-type', 'text/event-stream'),
-                headers={'X-Bridge-Backend': backend['name']},
+                headers=extra_headers,
             )
-        resp = await client.post(url, json=payload, headers=headers)
+        stripped_payload = {k: v for k, v in payload.items() if k not in ('tools', 'tool_choice')}
+        resp = await client.post(url, json=stripped_payload, headers=headers)
+        fallback = 'tools' in payload
     except httpx.HTTPError as exc:
         return JSONResponse(
             {'error': {
@@ -261,7 +276,10 @@ async def chat_completions(request: Request):
             }},
             status_code=max(resp.status_code, 500),
         )
-    return JSONResponse(json.loads(resp.content))
+    result = json.loads(resp.content)
+    if fallback:
+        result['bridge'] = {'fallback': 'tools_stripped'}
+    return JSONResponse(result)
 
 
 if __name__ == '__main__':
