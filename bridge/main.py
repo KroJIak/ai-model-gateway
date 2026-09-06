@@ -78,8 +78,7 @@ _state = {
 
 def _load_config():
     with open(CONFIG_PATH, encoding='utf-8') as f:
-        # подставляем значения вида ${VAR} из окружения
-        return yaml.safe_load(os.path.expandvars(f.read())) or {}
+        return yaml.safe_load(f.read()) or {}
 
 
 def _compile_backends(cfg):
@@ -87,18 +86,12 @@ def _compile_backends(cfg):
     for i, b in enumerate(cfg.get('backends', [])):
         if not b.get('enabled', True):
             continue
-        overrides = {}
-        for m in b.get('models', []) or []:
-            if isinstance(m, dict) and m.get('id'):
-                overrides[m['id']] = m
         backends.append({
             'name': b.get('name', f'backend-{i + 1}'),
             'base_url': b['base_url'].rstrip('/'),
             'api_key': b.get('api_key', ''),
             'include': b.get('include', []),
             'exclude': b.get('exclude', []),
-            'model_meta': b.get('model_meta', {}),
-            'overrides': overrides,
         })
     return backends
 
@@ -140,17 +133,14 @@ async def _scan_backends(client, backends):
                 continue
             if _glob_any(model_id, backend['exclude']):
                 continue
-            override = backend['overrides'].get(model_id, {})
-            meta = dict(backend['model_meta'])
-            meta.update(override.get('meta', {}))
-            claimed[model_id] = (backend, meta)
+            claimed[model_id] = backend
     if own_client:
         await client.aclose()
     return claimed, down
 
 
 async def _resolve(force=False):
-    """Возвращает (backends, {id: (backend, meta)}, down) из кэша или свежим сканом."""
+    """Возвращает (backends, {id: backend}, down) из кэша или свежим сканом."""
     async with _state['lock']:
         if not force and time.time() - _state['ts'] < CACHE_TTL:
             return _state['backends'], _state['map'], _state['down']
@@ -191,11 +181,8 @@ async def list_models(request: Request):
     _, model_map, down = await _resolve()
     data = []
     for model_id in sorted(model_map):
-        backend, meta = model_map[model_id]
-        entry = {'id': model_id, 'object': 'model', 'owned_by': backend['name']}
-        if meta:
-            entry['meta'] = meta
-        data.append(entry)
+        backend = model_map[model_id]
+        data.append({'id': model_id, 'object': 'model', 'owned_by': backend['name']})
     payload = {'object': 'list', 'data': data}
     if down:
         payload['bridge'] = {'backends_down': down}
@@ -215,8 +202,8 @@ async def chat_completions(request: Request):
         raise HTTPException(status_code=400, detail='model required')
 
     _, model_map, down = await _resolve()
-    route = model_map.get(model_id)
-    if not route:
+    backend = model_map.get(model_id)
+    if not backend:
         detail = f"Model '{model_id}' not found"
         if down:
             detail += f"; backends down: {', '.join(down)}"
@@ -225,10 +212,7 @@ async def chat_completions(request: Request):
             status_code=404,
         )
 
-    backend, _meta = route
-    upstream_model = backend['overrides'].get(model_id, {}).get('upstream_model', model_id)
     payload = dict(body)
-    payload['model'] = upstream_model
     headers = {'Content-Type': 'application/json', **_headers(backend)}
     url = f"{backend['base_url']}/chat/completions"
     client = _state['client']

@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 GROK_BIN = os.getenv('GROK_BIN', 'grok')
 GROK_CONFIG_DIR = os.getenv('GROK_CONFIG_DIR', str(Path.home() / '.grok'))
 import provider_models
-TIMEOUT = float(os.getenv('GROK_API_TIMEOUT', '180'))
+TIMEOUT = float(os.getenv('GROK_API_TIMEOUT', '240'))
 HOST = os.getenv('HOST', '0.0.0.0')
 PORT = int(os.getenv('PORT', '8090'))
 SEM = asyncio.Semaphore(int(os.getenv('MAX_CONCURRENCY', '4')))

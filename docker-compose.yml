@@ -13,7 +13,7 @@ services:
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
     environment:
       - API_PORT=8317
-      - API_KEYS=${GPT_API_KEYS:-sk-internal-gpt-api-key}
+      - API_KEYS=sk-internal-gpt-api-key
       - PROVIDER_BASE_URL=${GPT_PROVIDER_BASE_URL:?set in .env}
       - PROVIDER_API_KEY=${GPT_PROVIDER_API_KEY:?set in .env}
     volumes:
@@ -30,7 +30,7 @@ services:
     environment:
       - GROK_BASE_URL=${GROK_BASE_URL:?set in .env}
       - GROK_API_KEY=${GROK_API_KEY:?set in .env}
-      - GROK_API_TIMEOUT=${GROK_API_TIMEOUT:-240}
+      - GROK_API_TIMEOUT=${GROK_API_TIMEOUT:?set in .env}
     volumes:
       - grok-config:/data/.grok
     restart: unless-stopped
@@ -42,10 +42,8 @@ services:
       dockerfile: bridge/Dockerfile
     container_name: model-bridge
     environment:
-      - BRIDGE_CACHE_TTL=${BRIDGE_CACHE_TTL:-30}
-      - GPT_API_BASE_URL=${GPT_API_BASE_URL:-http://gpt-api:8317}
-      - GPT_API_KEYS=${GPT_API_KEYS:-sk-internal-gpt-api-key}
-      - BRIDGE_API_KEY=${BRIDGE_API_KEY:-}
+      - BRIDGE_API_KEY=${BRIDGE_API_KEY:?set in .env}
+      - BRIDGE_CACHE_TTL=${BRIDGE_CACHE_TTL:?set in .env}
     volumes:
       - ./config.yaml:/app/config.yaml:ro
     restart: unless-stopped
