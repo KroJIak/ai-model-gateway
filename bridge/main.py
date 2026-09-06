@@ -20,6 +20,11 @@ PORT = int(os.getenv('PORT', '8080'))
 API_AUTH_KEY = os.getenv('BRIDGE_API_KEY', '')
 TOOLS_STATE_PATH = os.getenv('TOOLS_STATE_PATH', '/app/data/tools_state.json')
 TOOLS_RETRY_TTL = float(os.getenv('TOOLS_RETRY_TTL_DAYS', '7')) * 86400
+# Каталог провайдера (нативные уровни) и models.dev (фолбэк).
+PROVIDER_BASE_URL = os.getenv('PROVIDER_BASE_URL', '').rstrip('/')
+PROVIDER_API_KEY = os.getenv('PROVIDER_API_KEY', '')
+PROVIDER_LEVELS_TTL = float(os.getenv('PROVIDER_LEVELS_TTL', '3600'))
+MODELSDEV_TTL = float(os.getenv('MODELSDEV_TTL', '86400'))
 
 
 def _load_tools_state():
@@ -105,6 +110,97 @@ def _glob_any(model_id, patterns):
     return any(fnmatch.fnmatch(model_id, p) for p in patterns or [])
 
 
+_levels = {
+    'provider': {'ts': 0.0, 'data': {}, 'lock': asyncio.Lock()},
+    'modelsdev': {'ts': 0.0, 'data': {}, 'lock': asyncio.Lock()},
+}
+
+
+async def _fetch_provider_levels(client):
+    """Нативные уровни провайдера: supported_reasoning_levels в каталоге."""
+    if not (PROVIDER_BASE_URL and PROVIDER_API_KEY):
+        return {}
+    resp = await client.get(
+        f'{PROVIDER_BASE_URL}/models',
+        headers={'Authorization': f'Bearer {PROVIDER_API_KEY}'},
+    )
+    resp.raise_for_status()
+    data = {}
+    for m in resp.json().get('data', []):
+        if not isinstance(m, dict) or not m.get('id'):
+            continue
+        levels = [
+            level.get('effort')
+            for level in m.get('supported_reasoning_levels') or []
+            if isinstance(level, dict) and isinstance(level.get('effort'), str) and level['effort']
+        ]
+        if levels:
+            data[m['id']] = levels
+    return data
+
+
+async def _fetch_modelsdev_levels(client):
+    """Фолбэк: models.dev, формат reasoning_options (type=effort).
+
+    У одной модели в каталоге несколько записей от разных провайдеров —
+    берём уровни, которые поддерживает большинство, в порядке медианной
+    позиции (даёт канонический набор без хардкода имён уровней).
+    """
+    resp = await client.get('https://models.dev/api.json')
+    resp.raise_for_status()
+    per_model = {}
+    for pdata in resp.json().values():
+        for model_id, m in (pdata.get('models') or {}).items():
+            if not isinstance(m, dict):
+                continue
+            for option in m.get('reasoning_options') or []:
+                if isinstance(option, dict) and option.get('type') == 'effort':
+                    values = [v for v in (option.get('values') or []) if isinstance(v, str) and v]
+                    if values:
+                        per_model.setdefault(model_id, []).append(values)
+                    break
+    data = {}
+    for model_id, variants in per_model.items():
+        stats = {}
+        for values in variants:
+            for pos, level in enumerate(values):
+                count, positions = stats.get(level, (0, []))
+                stats[level] = (count + 1, positions + [pos])
+        threshold = (len(variants) + 1) // 2
+        data[model_id] = sorted(
+            (level for level, (count, _) in stats.items() if count >= threshold),
+            key=lambda level: sorted(stats[level][1])[len(stats[level][1]) // 2],
+        )
+    return data
+
+
+async def _source_levels(source, fetcher):
+    """Уровни из одного источника с кэшем; при ошибке — последние известные."""
+    entry = _levels[source]
+    async with entry['lock']:
+        if time.time() - entry['ts'] < (PROVIDER_LEVELS_TTL if source == 'provider' else MODELSDEV_TTL):
+            return entry['data']
+        try:
+            data = await fetcher(_state['client'])
+            entry.update(ts=time.time(), data=data)
+            return data
+        except Exception:
+            return entry['data']  # источник недоступен — работаем на старом кэше
+
+
+async def _resolve_levels(model_ids):
+    """{id: уровни} — нативно от провайдера, иначе models.dev."""
+    provider, modelsdev = await asyncio.gather(
+        _source_levels('provider', _fetch_provider_levels),
+        _source_levels('modelsdev', _fetch_modelsdev_levels),
+    )
+    return {
+        model_id: levels
+        for model_id in model_ids
+        if (levels := provider.get(model_id) or modelsdev.get(model_id))
+    }
+
+
 async def _scan_backends(client, backends):
     """Опрашивает бэкенды в порядке конфигурации. Возвращает {id: backend}."""
     claimed = {}
@@ -172,10 +268,19 @@ async def health():
 async def list_models(request: Request):
     _check_auth(request)
     model_map, down = await _resolve()
+    levels_map = await _resolve_levels(model_map.keys())
     data = []
     for model_id in sorted(model_map):
         backend = model_map[model_id]
-        data.append({'id': model_id, 'object': 'model', 'owned_by': backend['name']})
+        entry = {'id': model_id, 'object': 'model', 'owned_by': backend['name']}
+        levels = levels_map.get(model_id)
+        if levels:
+            # стандартный формат models.dev: reasoning_options c type=effort
+            entry['meta'] = {
+                'reasoning': True,
+                'reasoning_options': [{'type': 'effort', 'values': levels}],
+            }
+        data.append(entry)
     payload = {'object': 'list', 'data': data}
     if down:
         payload['bridge'] = {'backends_down': down}

@@ -52,6 +52,11 @@ services:
       - BRIDGE_CACHE_TTL=${BRIDGE_CACHE_TTL:?set in .env}
       - BRIDGE_READ_TIMEOUT=${BRIDGE_READ_TIMEOUT:?set in .env}
       - TOOLS_RETRY_TTL_DAYS=${TOOLS_RETRY_TTL_DAYS:?set in .env}
+      # Каталог провайдера для нативных уровней размышлений
+      - PROVIDER_BASE_URL=${GROK_BASE_URL:?set in .env}
+      - PROVIDER_API_KEY=${GROK_API_KEY:?set in .env}
+      - PROVIDER_LEVELS_TTL=${PROVIDER_LEVELS_TTL:?set in .env}
+      - MODELSDEV_TTL=${MODELSDEV_TTL:?set in .env}
     volumes:
       - ./config.yaml:/app/config.yaml:ro
     depends_on:
