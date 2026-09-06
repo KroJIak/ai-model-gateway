@@ -1,6 +1,6 @@
-# Два сервиса: gpt-api (CLIProxyAPI — GPT-семейство) и grok-cli-api
-# (Grok Build CLI — все остальные модели). Мост агрегирует их в один
-# OpenAI-совместимый endpoint для Open WebUI.
+# Три сервиса: gpt-api (CLIProxyAPI — GPT-семейство), grok-cli-api
+# (Grok Build CLI — все остальные модели) и мост-агрегатор, который
+# отдаёт всё одним OpenAI-совместимым endpoint для Open WebUI.
 #
 # Внешние порты: см. docker-compose.override.yml (опционально).
 
@@ -12,7 +12,6 @@ services:
     container_name: gpt-api
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
     environment:
-      - API_ROLE=gpt
       - API_PORT=8317
       - API_KEYS=${GPT_API_KEYS:-sk-internal-gpt-api-key}
       - PROVIDER_BASE_URL=${GPT_PROVIDER_BASE_URL:?set in .env}
@@ -29,17 +28,9 @@ services:
     build: ./grok-cli-api
     container_name: grok-cli-api
     environment:
-      - GROK_BIN=/usr/local/bin/grok
-      - GROK_CONFIG_DIR=/data/.grok
       - GROK_BASE_URL=${GROK_BASE_URL:?set in .env}
       - GROK_API_KEY=${GROK_API_KEY:?set in .env}
-      - GROK_DEFAULT_MODEL=${GROK_DEFAULT_MODEL:-grok-4.6}
-      - GROK_MODELS_TTL=${GROK_MODELS_TTL:-60}
-      - NODE_OPTIONS=--dns-result-order=ipv4first
       - GROK_API_TIMEOUT=${GROK_API_TIMEOUT:-240}
-      - API_AUTH_KEY=${GROK_API_AUTH_KEY:-}
-      - HOST=0.0.0.0
-      - PORT=8090
     volumes:
       - grok-config:/data/.grok
     restart: unless-stopped
@@ -51,15 +42,12 @@ services:
       dockerfile: bridge/Dockerfile
     container_name: model-bridge
     environment:
-      - BRIDGE_CONFIG=/app/config.yaml
       - BRIDGE_CACHE_TTL=${BRIDGE_CACHE_TTL:-30}
       - GPT_API_BASE_URL=${GPT_API_BASE_URL:-http://gpt-api:8317}
       - GPT_API_KEYS=${GPT_API_KEYS:-sk-internal-gpt-api-key}
       - BRIDGE_API_KEY=${BRIDGE_API_KEY:-}
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-    ports:
-      - "127.0.0.1:8080:8080"
     restart: unless-stopped
 
 volumes:

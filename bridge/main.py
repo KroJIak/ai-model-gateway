@@ -185,21 +185,6 @@ async def health():
     return {'status': 'ok'}
 
 
-@app.get('/debug/connect')
-async def debug_connect():
-    import traceback
-    results = {}
-    async with httpx.AsyncClient(timeout=5.0) as c:
-        for url in ('http://gemini-cli-api:8765/v1/models', 'http://gpt-api:8317/v1/models'):
-            try:
-                r = await c.get(url)
-                results[url] = f'HTTP {r.status_code}'
-            except Exception as exc:
-                tb = ''.join(traceback.format_exception(type(exc), exc, exc.__cause__)[-3:])
-                results[url] = f'{type(exc).__name__}: {exc} | cause: {tb[-200:]}'
-    return results
-
-
 @app.get('/v1/models')
 async def list_models(request: Request):
     _check_auth(request)
@@ -270,8 +255,8 @@ async def chat_completions(request: Request):
                 stripped = {k: v for k, v in payload.items() if k not in ('tools', 'tool_choice')}
                 resp = await _attempt(stripped)
                 fallback = True
-            elif resp.status_code < 400 and tool_payload:
-                _clear_tools_mark(model_id)  # принимает инструменты — пометка не нужна
+            elif resp.status_code < 400 and tool_payload and not tools_blocked:
+                _clear_tools_mark(model_id)  # инструменты дошли до бэкенда и приняты
             if resp.status_code >= 400:
                 raw = (await resp.aread()).decode(errors='replace')[:400]
                 await resp.aclose()
@@ -304,8 +289,8 @@ async def chat_completions(request: Request):
             stripped = {k: v for k, v in payload.items() if k not in ('tools', 'tool_choice')}
             resp = await client.post(url, json=stripped, headers=headers)
             fallback = True
-        elif resp.status_code < 400 and tool_payload:
-            _clear_tools_mark(model_id)  # принимает инструменты — пометка не нужна
+        elif resp.status_code < 400 and tool_payload and not tools_blocked:
+            _clear_tools_mark(model_id)  # инструменты дошли до бэкенда и приняты
     except httpx.HTTPError as exc:
         return JSONResponse(
             {'error': {
@@ -326,7 +311,6 @@ async def chat_completions(request: Request):
     result = json.loads(resp.content)
     if fallback:
         result['bridge'] = {'fallback': 'tools_stripped'}
-    return JSONResponse(result)
     return JSONResponse(result)
 
 

@@ -14,20 +14,11 @@ GROK_BIN = os.getenv('GROK_BIN', 'grok')
 GROK_CONFIG_DIR = os.getenv('GROK_CONFIG_DIR', str(Path.home() / '.grok'))
 import provider_models
 TIMEOUT = float(os.getenv('GROK_API_TIMEOUT', '180'))
-API_AUTH_KEY = os.getenv('API_AUTH_KEY')
 HOST = os.getenv('HOST', '0.0.0.0')
 PORT = int(os.getenv('PORT', '8090'))
 SEM = asyncio.Semaphore(int(os.getenv('MAX_CONCURRENCY', '4')))
 
 app = FastAPI(title='grok-cli-api')
-
-
-def _check_auth(request: Request):
-    if not API_AUTH_KEY:
-        return
-    auth = request.headers.get('authorization', '')
-    if auth != f'Bearer {API_AUTH_KEY}':
-        raise HTTPException(status_code=401, detail='Unauthorized')
 
 
 def _build_prompt(messages) -> str:
@@ -87,16 +78,14 @@ async def health():
 
 
 @app.get('/v1/models')
-async def models(request: Request):
-    _check_auth(request)
+async def models():
     return {'object': 'list', 'data': [{'id': m, 'object': 'model', 'owned_by': 'grok-cli'} for m in provider_models.get_grok_models()]}
 
 
 @app.post('/v1/chat/completions')
 async def chat_completions(request: Request):
-    _check_auth(request)
     body = await request.json()
-    model = body.get('model', 'grok-4.6')
+    model = body.get('model')
     if not provider_models.is_supported(model):
         raise HTTPException(status_code=400, detail=f'Unsupported model: {model}')
     messages = body.get('messages') or []
