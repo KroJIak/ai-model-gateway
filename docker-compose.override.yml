@@ -2,10 +2,8 @@
 # Если порты не нужны — удалите этот файл (мост и так доступен внутри
 # docker-сети по имени model-bridge:8080).
 #
-# В .env задайте:
-#   BRIDGE_EXTERNAL_PORT=8080
-#   GPT_API_EXTERNAL_PORT=8317
-#   GROK_API_EXTERNAL_PORT=8090
+# Порты хоста задаются в .env: BRIDGE_EXTERNAL_PORT, GPT_API_EXTERNAL_PORT,
+# GROK_API_EXTERNAL_PORT.
 
 services:
   model-bridge:

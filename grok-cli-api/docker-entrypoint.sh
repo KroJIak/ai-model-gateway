@@ -3,7 +3,7 @@ set -eu
 
 # Настраиваем Grok CLI на провайдера: модели берём из его каталога.
 
-GROK_CONFIG_DIR="${GROK_CONFIG_DIR:-$HOME/.grok}"
+GROK_CONFIG_DIR="${GROK_CONFIG_DIR:?GROK_CONFIG_DIR required}"
 GROK_BASE_URL="${GROK_BASE_URL:?GROK_BASE_URL required}"
 GROK_API_KEY="${GROK_API_KEY:?GROK_API_KEY required}"
 

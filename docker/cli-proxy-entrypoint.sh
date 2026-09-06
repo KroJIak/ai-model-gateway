@@ -3,7 +3,7 @@ set -eu
 
 # Настраиваем CLIProxyAPI на провайдера по переменным из .env.
 
-PORT_NUM="${API_PORT:-8317}"
+PORT_NUM="${API_PORT:?API_PORT required}"
 INBOUND_KEY="${API_KEYS:?API_KEYS required (inbound bearer key)}"
 PROVIDER_URL="${PROVIDER_BASE_URL:?PROVIDER_BASE_URL required}"
 PROVIDER_KEY="${PROVIDER_API_KEY:?PROVIDER_API_KEY required}"

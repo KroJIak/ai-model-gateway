@@ -10,9 +10,10 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+import provider_models
+
 GROK_BIN = os.getenv('GROK_BIN', 'grok')
 GROK_CONFIG_DIR = os.getenv('GROK_CONFIG_DIR', str(Path.home() / '.grok'))
-import provider_models
 TIMEOUT = float(os.getenv('GROK_API_TIMEOUT', '240'))
 HOST = os.getenv('HOST', '0.0.0.0')
 PORT = int(os.getenv('PORT', '8090'))
@@ -79,7 +80,7 @@ async def health():
 
 @app.get('/v1/models')
 async def models():
-    return {'object': 'list', 'data': [{'id': m, 'object': 'model', 'owned_by': 'grok-cli'} for m in provider_models.get_grok_models()]}
+    return {'object': 'list', 'data': [{'id': m, 'object': 'model', 'owned_by': 'grok-cli'} for m in provider_models.get_models()]}
 
 
 @app.post('/v1/chat/completions')

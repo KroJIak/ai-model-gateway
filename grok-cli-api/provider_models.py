@@ -1,8 +1,7 @@
-"""Auto-discovery of the provider's grok models (no hardcoded lists)."""
+"""Auto-discovery of the provider's model catalog (no hardcoded lists)."""
 
 import json
 import os
-import re
 import time
 import urllib.request
 from threading import Lock
@@ -30,8 +29,8 @@ def _fetch():
     return ids
 
 
-def get_grok_models():
-    """Cached grok model ids from the provider catalog."""
+def get_models():
+    """Cached provider model ids."""
     with _lock:
         if time.time() - _cache['ts'] < TTL and _cache['ids']:
             return list(_cache['ids'])
@@ -42,7 +41,7 @@ def get_grok_models():
 
 
 def is_supported(model_id: str) -> bool:
-    """Supported = matches the grok family; unknown ids are still tried if
-    the catalog is temporarily unavailable (graceful degradation)."""
-    ids = get_grok_models()
+    """Known id from the catalog; unknown ids are still tried if the
+    catalog is temporarily unavailable (graceful degradation)."""
+    ids = get_models()
     return not ids or model_id in ids
