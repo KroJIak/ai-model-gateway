@@ -1,8 +1,7 @@
 #!/bin/sh
 set -eu
 
-# CLIProxyAPI instance configured entirely from environment.
-# Used as the GPT-family channel and as the "other models" channel.
+# Настраиваем CLIProxyAPI на провайдера по переменным из .env.
 
 ROLE="${API_ROLE:-gpt}"
 PORT_NUM="${API_PORT:-8317}"
@@ -29,7 +28,7 @@ EOF
 /CLIProxyAPI/CLIProxyAPI &
 PID=$!
 
-# The upstream image injects a forced payload section after startup; strip it.
+# Убираем лишнюю секцию, которую добавляет образ.
 i=0
 while [ "$i" -lt 30 ]; do
   if grep -q '^payload:' /CLIProxyAPI/config.yaml 2>/dev/null; then

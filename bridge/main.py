@@ -1,18 +1,4 @@
-"""Model Bridge — агрегатор CLI-API сервисов в единый OpenAI-совместимый endpoint.
-
-Правила маршрутизации (задаются в config.yaml):
-- бэкенды опрашиваются в порядке конфигурации; модель закрепляется за первым
-  бэкендом, который её отдаёт (приоритет специализированных сервисов);
-- include/exclude — glob-паттерны имён моделей (fnmatch);
-- enabled: false — бэкенд полностью выключен;
-- model_meta — metadata, добавляемая всем моделям бэкенда (фичи, пометки).
-
-Env:
-  BRIDGE_CONFIG      путь к конфигу              (default: config.yaml)
-  BRIDGE_CACHE_TTL   TTL скана бэкендов, сек     (default: 30)
-  BRIDGE_READ_TIMEOUT таймаут чтения ответа, сек (default: 600)
-  HOST / PORT        адрес сервиса               (default: 0.0.0.0:8080)
-"""
+"""Мост: один API для всех моделей. Маршрутизация — в config.yaml."""
 
 import asyncio
 import fnmatch
@@ -92,7 +78,7 @@ _state = {
 
 def _load_config():
     with open(CONFIG_PATH, encoding='utf-8') as f:
-        # ${VAR} в значениях конфига раскрываются из окружения контейнера
+        # подставляем значения вида ${VAR} из окружения
         return yaml.safe_load(os.path.expandvars(f.read())) or {}
 
 
@@ -149,7 +135,7 @@ async def _scan_backends(client, backends):
             continue
         for model_id in ids:
             if model_id in claimed:
-                continue  # приоритет: первый по порядку конфигурации
+                continue  # кто первый — тот и владеет моделью
             if backend['include'] and not _glob_any(model_id, backend['include']):
                 continue
             if _glob_any(model_id, backend['exclude']):
@@ -277,7 +263,7 @@ async def chat_completions(request: Request):
             )
             resp = await _attempt(attempt)
             fallback = tools_blocked
-            # Канал не переварил инструменты: запоминаем на TTL и повторяем без них.
+            # не сработало с инструментами — запоминаем и пробуем без них
             if resp.status_code >= 400 and tool_payload:
                 _mark_tools_failed(model_id)
                 await resp.aclose()
@@ -285,7 +271,7 @@ async def chat_completions(request: Request):
                 resp = await _attempt(stripped)
                 fallback = True
             elif resp.status_code < 400 and tool_payload:
-                _clear_tools_mark(model_id)  # канал принимает tools — пометка не нужна
+                _clear_tools_mark(model_id)  # принимает инструменты — пометка не нужна
             if resp.status_code >= 400:
                 raw = (await resp.aread()).decode(errors='replace')[:400]
                 await resp.aclose()
@@ -312,14 +298,14 @@ async def chat_completions(request: Request):
         )
         resp = await client.post(url, json=attempt, headers=headers)
         fallback = tools_blocked
-        # Канал не переварил инструменты: запоминаем на TTL и повторяем без них.
+        # не сработало с инструментами — запоминаем и пробуем без них
         if resp.status_code >= 400 and tool_payload:
             _mark_tools_failed(model_id)
             stripped = {k: v for k, v in payload.items() if k not in ('tools', 'tool_choice')}
             resp = await client.post(url, json=stripped, headers=headers)
             fallback = True
         elif resp.status_code < 400 and tool_payload:
-            _clear_tools_mark(model_id)  # канал принимает tools — пометка не нужна
+            _clear_tools_mark(model_id)  # принимает инструменты — пометка не нужна
     except httpx.HTTPError as exc:
         return JSONResponse(
             {'error': {

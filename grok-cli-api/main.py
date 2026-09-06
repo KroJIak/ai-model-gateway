@@ -1,19 +1,4 @@
-"""
-Grok Build CLI → OpenAI-compatible API gateway.
-
-Runs the grok CLI (grok-unleashed or official) headlessly per request and
-exposes OpenAI-compatible endpoints. Provider-agnostic: the CLI's own config
-(~/.grok/config.toml or GROK_CONFIG_DIR) points at any OpenAI-compatible
-backend; this service only wraps the CLI process.
-
-Env:
-  GROK_BIN            path to the grok binary        (default: grok)
-  GROK_CONFIG_DIR     config dir passed as HOME/.grok (default: ~/.grok)
-  GROK_PROXY_MODELS   comma-separated model list     (default: grok-4.6,grok-4.5)
-  GROK_API_TIMEOUT    per-request timeout, seconds   (default: 180)
-  API_AUTH_KEY        optional Bearer key to protect this endpoint
-  HOST / PORT         bind address                  (default: 0.0.0.0:8090)
-"""
+"""API над Grok CLI. Модели и провайдер — из окружения (env)."""
 
 import asyncio
 import json

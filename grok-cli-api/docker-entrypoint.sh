@@ -1,9 +1,7 @@
 #!/bin/sh
 set -eu
 
-# Grok Build CLI configured against ANY OpenAI-compatible relay (env-driven).
-# The model catalog is fetched live from the provider at startup — no
-# hardcoded model lists.
+# Настраиваем Grok CLI на провайдера: модели берём из его каталога.
 
 import_sys() { :; }
 GROK_CONFIG_DIR="${GROK_CONFIG_DIR:-$HOME/.grok}"
@@ -51,6 +49,5 @@ with open(out_path, 'w') as f:
 print(f'configured {len(ids)} models', file=sys.stderr)
 PYEOF
 
-# The API server spawns the grok CLI headlessly (grok -p) per request —
-# no TTY needed in the container.
+# Запускаем API. CLI вызывается без экрана на каждый запрос.
 exec python3 main.py
