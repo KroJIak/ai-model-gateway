@@ -189,16 +189,23 @@ async def _source_levels(source, fetcher):
 
 
 async def _resolve_levels(model_ids):
-    """{id: уровни} — нативно от провайдера, иначе models.dev."""
+    """{id: уровни} — нативно от провайдера, иначе models.dev.
+
+    Уровень 'none' (размышление выключено) убираем, если есть другие.
+    """
     provider, modelsdev = await asyncio.gather(
         _source_levels('provider', _fetch_provider_levels),
         _source_levels('modelsdev', _fetch_modelsdev_levels),
     )
-    return {
-        model_id: levels
-        for model_id in model_ids
-        if (levels := provider.get(model_id) or modelsdev.get(model_id))
-    }
+    result = {}
+    for model_id in model_ids:
+        levels = provider.get(model_id) or modelsdev.get(model_id)
+        if not levels:
+            continue
+        if len(levels) > 1 and 'none' in levels:
+            levels = [level for level in levels if level != 'none']
+        result[model_id] = levels
+    return result
 
 
 async def _scan_backends(client, backends):
