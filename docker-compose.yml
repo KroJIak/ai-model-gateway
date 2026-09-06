@@ -1,12 +1,5 @@
-# Три сервиса: gpt-api (CLIProxyAPI — GPT-семейство), grok-cli-api
-# (Grok Build CLI — все остальные модели) и мост-агрегатор, который
-# отдаёт всё одним OpenAI-совместимым endpoint для Open WebUI.
-#
-# Внешние порты: см. docker-compose.override.yml (опционально).
 
 services:
-  # GPT-семейство: CLIProxyAPI поверх любого OpenAI-совместимого релея.
-  # Мост берёт из этого бэкенда только модели gpt-*.
   gpt-api:
     image: eceasy/cli-proxy-api:v7.2.149
     container_name: gpt-api
@@ -22,8 +15,6 @@ services:
       - gpt-api-logs:/CLIProxyAPI/logs
     restart: unless-stopped
 
-  # Универсальный CLI-сервис (Grok Build CLI + полный каталог провайдера).
-  # Обслуживает все остальные модели: grok, gemini, китайские и т.д.
   grok-cli-api:
     build: ./grok-cli-api
     container_name: grok-cli-api
@@ -41,7 +32,6 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  # Мост: единый OpenAI-совместимый endpoint для Open WebUI.
   model-bridge:
     build:
       context: .
@@ -52,7 +42,6 @@ services:
       - BRIDGE_CACHE_TTL=${BRIDGE_CACHE_TTL:?set in .env}
       - BRIDGE_READ_TIMEOUT=${BRIDGE_READ_TIMEOUT:?set in .env}
       - TOOLS_RETRY_TTL_DAYS=${TOOLS_RETRY_TTL_DAYS:?set in .env}
-      # Каталог провайдера для нативных уровней размышлений
       - PROVIDER_BASE_URL=${GROK_BASE_URL:?set in .env}
       - PROVIDER_API_KEY=${GROK_API_KEY:?set in .env}
       - PROVIDER_LEVELS_TTL=${PROVIDER_LEVELS_TTL:?set in .env}

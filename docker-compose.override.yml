@@ -1,17 +1,10 @@
-# ОПЦИОНАЛЬНО: внешние порты сервисов. Файл автозагружается docker compose.
-# Если порты не нужны — удалите этот файл (мост и так доступен внутри
-# docker-сети по имени model-bridge:8080).
-#
-# Порты хоста задаются в .env: BRIDGE_EXTERNAL_PORT, GPT_API_EXTERNAL_PORT,
-# GROK_API_EXTERNAL_PORT.
-
 services:
   model-bridge:
     ports:
-      - "${BRIDGE_EXTERNAL_PORT:?укажите BRIDGE_EXTERNAL_PORT в .env, либо удалите docker-compose.override.yml}:8080"
+      - "127.0.0.1:${BRIDGE_EXTERNAL_PORT-8081}:8080"
   gpt-api:
     ports:
-      - "${GPT_API_EXTERNAL_PORT:?укажите GPT_API_EXTERNAL_PORT в .env}:8317"
+      - "127.0.0.1:${GPT_API_EXTERNAL_PORT-18317}:8317"
   grok-cli-api:
     ports:
-      - "${GROK_API_EXTERNAL_PORT:?укажите GROK_API_EXTERNAL_PORT в .env}:8090"
+      - "127.0.0.1:${GROK_API_EXTERNAL_PORT-18090}:8090"
