@@ -95,43 +95,43 @@ async def chat_completions(request: Request):
     prompt = _build_prompt(messages)
     created = int(time.time())
 
-    async with SEM:
-        if not stream:
+    if not stream:
+        async with SEM:
             text = await _run_grok(prompt)
-            return JSONResponse({
-                'id': f'chatcmpl-grok-{created}',
-                'object': 'chat.completion',
-                'created': created,
-                'model': model,
-                'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': text}, 'finish_reason': 'stop'}],
-                'usage': {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0},
-            })
+        return JSONResponse({
+            'id': f'chatcmpl-grok-{created}',
+            'object': 'chat.completion',
+            'created': created,
+            'model': model,
+            'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': text}, 'finish_reason': 'stop'}],
+            'usage': {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0},
+        })
 
-        async def sse():
-            try:
-                async with SEM:
-                    text = await _run_grok(prompt)
-            except HTTPException as exc:
-                payload = json.dumps({'error': {'message': exc.detail}}).encode()
-                yield b'data: ' + payload + b'\n\n'
-                yield b'data: [DONE]\n\n'
-                return
-            base = {
-                'id': f'chatcmpl-grok-{created}',
-                'object': 'chat.completion.chunk',
-                'created': created,
-                'model': model,
-            }
-            for i in range(0, len(text), 160):
-                chunk = dict(base)
-                chunk['choices'] = [{'index': 0, 'delta': {'content': text[i:i + 160]}, 'finish_reason': None}]
-                yield b'data: ' + json.dumps(chunk, ensure_ascii=False).encode() + b'\n\n'
-            chunk = dict(base)
-            chunk['choices'] = [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]
-            yield b'data: ' + json.dumps(chunk).encode() + b'\n\n'
+    async def sse():
+        try:
+            async with SEM:
+                text = await _run_grok(prompt)
+        except HTTPException as exc:
+            payload = json.dumps({'error': {'message': exc.detail}}).encode()
+            yield b'data: ' + payload + b'\n\n'
             yield b'data: [DONE]\n\n'
+            return
+        base = {
+            'id': f'chatcmpl-grok-{created}',
+            'object': 'chat.completion.chunk',
+            'created': created,
+            'model': model,
+        }
+        for i in range(0, len(text), 160):
+            chunk = dict(base)
+            chunk['choices'] = [{'index': 0, 'delta': {'content': text[i:i + 160]}, 'finish_reason': None}]
+            yield b'data: ' + json.dumps(chunk, ensure_ascii=False).encode() + b'\n\n'
+        chunk = dict(base)
+        chunk['choices'] = [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]
+        yield b'data: ' + json.dumps(chunk).encode() + b'\n\n'
+        yield b'data: [DONE]\n\n'
 
-        return StreamingResponse(sse(), media_type='text/event-stream')
+    return StreamingResponse(sse(), media_type='text/event-stream')
 
 
 if __name__ == '__main__':

@@ -18,10 +18,16 @@ cp .env.example .env       # заполнить ключами провайде�
 docker compose up -d --build
 ```
 
+Для сборки `grok-cli-api` нужен бинарь Grok Build CLI: положите его
+в `grok-cli-api/grok-unleashed-linux-x86_64` (в git не хранится).
+
 - Внутри docker-сети: `http://model-bridge:8080/v1`
 - Снаружи: поднимите внешние порты через `docker-compose.override.yml`
   (значения — в `.env`, например `http://localhost:8081/v1`)
 - Авторизация: `Authorization: Bearer <BRIDGE_API_KEY из .env>`
+
+Все переменные окружения перечислены в `.env.example`; compose берёт
+их только оттуда и без них не запускается.
 
 ## Маршрутизация
 

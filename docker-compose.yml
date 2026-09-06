@@ -44,6 +44,8 @@ services:
     environment:
       - BRIDGE_API_KEY=${BRIDGE_API_KEY:?set in .env}
       - BRIDGE_CACHE_TTL=${BRIDGE_CACHE_TTL:?set in .env}
+      - BRIDGE_READ_TIMEOUT=${BRIDGE_READ_TIMEOUT:?set in .env}
+      - TOOLS_RETRY_TTL_DAYS=${TOOLS_RETRY_TTL_DAYS:?set in .env}
     volumes:
       - ./config.yaml:/app/config.yaml:ro
     restart: unless-stopped

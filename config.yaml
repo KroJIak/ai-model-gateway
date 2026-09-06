@@ -1,0 +1,16 @@
+# Куда какая модель идёт.
+# gpt-* — через CLIProxyAPI, остальное — через Grok CLI.
+
+backends:
+  - name: gpt
+    enabled: true
+    base_url: http://gpt-api:8317/v1
+    api_key: sk-internal-gpt-api-key
+    include:
+      - "gpt-*"
+
+  - name: grok-cli
+    enabled: true
+    base_url: http://grok-cli-api:8090/v1
+    exclude:
+      - "gpt-*"

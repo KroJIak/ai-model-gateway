@@ -71,7 +71,6 @@ _state = {
     'lock': asyncio.Lock(),
     'ts': 0.0,
     'map': {},
-    'backends': [],
     'down': [],
 }
 
@@ -107,12 +106,9 @@ def _glob_any(model_id, patterns):
 
 
 async def _scan_backends(client, backends):
-    """Опрашивает бэкенды в порядке конфигурации. Возвращает {id: (backend, meta)}."""
+    """Опрашивает бэкенды в порядке конфигурации. Возвращает {id: backend}."""
     claimed = {}
     down = []
-    own_client = client is None
-    if own_client:
-        client = httpx.AsyncClient(timeout=CLIENT_TIMEOUT)
     for backend in backends:
         try:
             resp = await client.get(
@@ -134,21 +130,18 @@ async def _scan_backends(client, backends):
             if _glob_any(model_id, backend['exclude']):
                 continue
             claimed[model_id] = backend
-    if own_client:
-        await client.aclose()
     return claimed, down
 
 
-async def _resolve(force=False):
-    """Возвращает (backends, {id: backend}, down) из кэша или свежим сканом."""
+async def _resolve():
+    """Возвращает ({id: backend}, down) из кэша или свежим сканом."""
     async with _state['lock']:
-        if not force and time.time() - _state['ts'] < CACHE_TTL:
-            return _state['backends'], _state['map'], _state['down']
-        cfg = _load_config()
-        backends = _compile_backends(cfg)
+        if time.time() - _state['ts'] < CACHE_TTL:
+            return _state['map'], _state['down']
+        backends = _compile_backends(_load_config())
         model_map, down = await _scan_backends(_state['client'], backends)
-        _state.update(ts=time.time(), map=model_map, backends=backends, down=down)
-        return backends, model_map, down
+        _state.update(ts=time.time(), map=model_map, down=down)
+        return model_map, down
 
 
 @asynccontextmanager
@@ -178,7 +171,7 @@ async def health():
 @app.get('/v1/models')
 async def list_models(request: Request):
     _check_auth(request)
-    _, model_map, down = await _resolve()
+    model_map, down = await _resolve()
     data = []
     for model_id in sorted(model_map):
         backend = model_map[model_id]
@@ -201,7 +194,7 @@ async def chat_completions(request: Request):
     if not model_id:
         raise HTTPException(status_code=400, detail='model required')
 
-    _, model_map, down = await _resolve()
+    model_map, down = await _resolve()
     backend = model_map.get(model_id)
     if not backend:
         detail = f"Model '{model_id}' not found"
