@@ -33,6 +33,12 @@ services:
       - GROK_API_TIMEOUT=${GROK_API_TIMEOUT:?set in .env}
     volumes:
       - grok-config:/data/.grok
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
     restart: unless-stopped
 
   # Мост: единый OpenAI-совместимый endpoint для Open WebUI.
@@ -48,6 +54,11 @@ services:
       - TOOLS_RETRY_TTL_DAYS=${TOOLS_RETRY_TTL_DAYS:?set in .env}
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+    depends_on:
+      gpt-api:
+        condition: service_started
+      grok-cli-api:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
