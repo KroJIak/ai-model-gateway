@@ -14,7 +14,7 @@ services:
     environment:
       - API_ROLE=gpt
       - API_PORT=8317
-      - API_KEYS=${GPT_API_KEYS:?set in .env}
+      - API_KEYS=${GPT_API_KEYS:-sk-internal-gpt-api-key}
       - PROVIDER_BASE_URL=${GPT_PROVIDER_BASE_URL:?set in .env}
       - PROVIDER_API_KEY=${GPT_PROVIDER_API_KEY:?set in .env}
     volumes:
@@ -54,7 +54,7 @@ services:
       - BRIDGE_CONFIG=/app/config.yaml
       - BRIDGE_CACHE_TTL=${BRIDGE_CACHE_TTL:-30}
       - GPT_API_BASE_URL=${GPT_API_BASE_URL:-http://gpt-api:8317}
-      - GPT_API_KEYS=${GPT_API_KEYS:-}
+      - GPT_API_KEYS=${GPT_API_KEYS:-sk-internal-gpt-api-key}
       - BRIDGE_API_KEY=${BRIDGE_API_KEY:-}
     volumes:
       - ./config.yaml:/app/config.yaml:ro
