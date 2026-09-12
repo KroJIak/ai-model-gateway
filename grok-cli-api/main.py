@@ -41,12 +41,18 @@ def _build_prompt(messages) -> str:
     return '\n\n'.join(parts)
 
 
-async def _run_grok(prompt: str):
+async def _run_grok(prompt: str, model: str | None = None, effort: str | None = None):
     env = dict(os.environ)
     env['HOME'] = GROK_CONFIG_DIR.rsplit('/.grok', 1)[0] if '/.grok' in GROK_CONFIG_DIR else str(Path.home())
     env.setdefault('TERM', 'dumb')
+    args = [GROK_BIN]
+    if model:
+        args += ['-m', model]
+    if effort:
+        args += ['--effort', effort]
+    args += ['-p', prompt]
     proc = await asyncio.create_subprocess_exec(
-        GROK_BIN, '-p', prompt,
+        *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         cwd='/tmp',
@@ -94,11 +100,13 @@ async def chat_completions(request: Request):
         raise HTTPException(status_code=400, detail='messages required')
     stream = bool(body.get('stream'))
     prompt = _build_prompt(messages)
+    effort = body.get('reasoning_effort')
+    effort = effort if isinstance(effort, str) and effort else None
     created = int(time.time())
 
     if not stream:
         async with SEM:
-            text = await _run_grok(prompt)
+            text = await _run_grok(prompt, model, effort)
         return JSONResponse({
             'id': f'chatcmpl-grok-{created}',
             'object': 'chat.completion',
@@ -111,7 +119,7 @@ async def chat_completions(request: Request):
     async def sse():
         try:
             async with SEM:
-                text = await _run_grok(prompt)
+                text = await _run_grok(prompt, model, effort)
         except HTTPException as exc:
             payload = json.dumps({'error': {'message': exc.detail}}).encode()
             yield b'data: ' + payload + b'\n\n'
