@@ -1,11 +1,13 @@
 """Мост: один API для всех моделей. Маршрутизация — в config.yaml."""
 
 import asyncio
+import base64
 import fnmatch
 import json
 import os
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 import uvicorn
@@ -25,6 +27,8 @@ PROVIDER_BASE_URL = os.getenv('PROVIDER_BASE_URL', '').rstrip('/')
 PROVIDER_API_KEY = os.getenv('PROVIDER_API_KEY', '')
 PROVIDER_LEVELS_TTL = float(os.getenv('PROVIDER_LEVELS_TTL', '3600'))
 MODELSDEV_TTL = float(os.getenv('MODELSDEV_TTL', '86400'))
+# Иконки классов моделей: gpt → openai, claude/grok/gemini → свои, остальное → other
+ICONS_DIR = Path(__file__).parent / 'icons'
 
 
 def _load_tools_state():
@@ -108,6 +112,31 @@ def _headers(backend):
 
 def _glob_any(model_id, patterns):
     return any(fnmatch.fnmatch(model_id, p) for p in patterns or [])
+
+
+_icons = {}
+
+
+def _icon_data_uri(model_id):
+    """data:image/png;base64 иконки класса модели (openai/claude/grok/gemini/other)."""
+    if not _icons:
+        for name in ('openai', 'claude', 'grok', 'gemini', 'other'):
+            path = ICONS_DIR / f'{name}.png'
+            if path.exists():
+                _icons[name] = (
+                    'data:image/png;base64,'
+                    + base64.b64encode(path.read_bytes()).decode()
+                )
+    model_id = model_id.lower()
+    for prefix, name in (
+        ('gpt', 'openai'),
+        ('claude', 'claude'),
+        ('grok', 'grok'),
+        ('gemini', 'gemini'),
+    ):
+        if model_id.startswith(prefix):
+            return _icons.get(name) or _icons.get('other')
+    return _icons.get('other')
 
 
 _levels = {
@@ -287,6 +316,9 @@ async def list_models(request: Request):
                 'reasoning': True,
                 'reasoning_options': [{'type': 'effort', 'values': levels}],
             }
+        icon = _icon_data_uri(model_id)
+        if icon:
+            entry.setdefault('meta', {})['profile_image_url'] = icon
         data.append(entry)
     payload = {'object': 'list', 'data': data}
     if down:
