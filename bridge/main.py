@@ -120,7 +120,7 @@ _icons = {}
 def _icon_data_uri(model_id):
     """data:image/png;base64 иконки класса модели (openai/claude/grok/gemini/other)."""
     if not _icons:
-        for name in ('openai', 'claude', 'grok', 'gemini', 'other'):
+        for name in ('openai', 'claude', 'grok', 'gemini', 'deepseek', 'other'):
             path = ICONS_DIR / f'{name}.png'
             if path.exists():
                 _icons[name] = (
@@ -133,6 +133,7 @@ def _icon_data_uri(model_id):
         ('claude', 'claude'),
         ('grok', 'grok'),
         ('gemini', 'gemini'),
+        ('deepseek', 'deepseek'),
     ):
         if model_id.startswith(prefix):
             return _icons.get(name) or _icons.get('other')
