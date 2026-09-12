@@ -14,3 +14,7 @@ backends:
     base_url: http://grok-cli-api:8090/v1
     exclude:
       - "gpt-*"
+      # у провайдера битый стриминг этих каналов (оба API-режима);
+      # COMPAT_RESPONSES_MODELS в .env — попытка через Responses API
+      - "deepseek-v4-flash"
+      - "minimax-m3"

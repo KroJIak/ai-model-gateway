@@ -6,18 +6,23 @@ set -eu
 GROK_CONFIG_DIR="${GROK_CONFIG_DIR:?GROK_CONFIG_DIR required}"
 GROK_BASE_URL="${GROK_BASE_URL:?GROK_BASE_URL required}"
 GROK_API_KEY="${GROK_API_KEY:?GROK_API_KEY required}"
+# Модели, чей chat_completions-стриминг не соответствует OpenAI (пустой finish_reason
+# и т.п.), идут через Responses API релея. Пробел или запятая — разделитель.
+COMPAT_RESPONSES_MODELS="${COMPAT_RESPONSES_MODELS:-}"
 
 mkdir -p "$GROK_CONFIG_DIR"
 
 CONFIG_PATH="$GROK_CONFIG_DIR/config.toml" \
 GROK_BASE_URL="$GROK_BASE_URL" \
 GROK_API_KEY="$GROK_API_KEY" \
+COMPAT_RESPONSES_MODELS="$COMPAT_RESPONSES_MODELS" \
 python3 - <<'PYEOF'
-import json, os, re, sys, urllib.request
+import json, os, re, sys, time, urllib.request
 
 base_url = os.environ['GROK_BASE_URL'].rstrip('/')
 api_key = os.environ['GROK_API_KEY']
 out_path = os.environ['CONFIG_PATH']
+compat_responses = {m for m in os.environ.get('COMPAT_RESPONSES_MODELS', '').replace(',', ' ').split() if m}
 
 def label_for(mid):
     """Личность агента = настоящее имя семейства модели (без навязанного Grok)."""
@@ -27,24 +32,29 @@ def label_for(mid):
 
 req = urllib.request.Request(base_url + '/models', headers={'Authorization': f'Bearer {api_key}'})
 ids = []
-try:
-    with urllib.request.urlopen(req, timeout=20) as r:
-        ids = [m['id'] for m in json.loads(r.read()).get('data', []) if m.get('id')]
-except Exception as e:
-    print(f'catalog fetch failed, models will come from provider anyway: {e}', file=sys.stderr)
+for attempt in range(1, 6):
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            ids = [m['id'] for m in json.loads(r.read()).get('data', []) if m.get('id')]
+        break
+    except Exception as e:
+        print(f'catalog fetch attempt {attempt}/5 failed: {e}', file=sys.stderr)
+        if attempt < 5:
+            time.sleep(5)
 
 default_model = next((i for i in ids if i.startswith('grok-')), ids[0] if ids else 'grok-4.6')
 ids = [default_model] + [i for i in ids if i != default_model]
 
 lines = ['[models]', f'default = "{default_model}"', '']
 for mid in ids:
+    backend = 'responses' if mid in compat_responses else 'chat_completions'
     lines += [
         f'[model."{mid}"]',
         f'model = "{mid}"',
         f'system_prompt_label = "{label_for(mid)}"',
         f'base_url = "{base_url}"',
         f'api_key = "{api_key}"',
-        'api_backend = "chat_completions"',
+        f'api_backend = "{backend}"',
         'context_window = 131072',
         '',
     ]
