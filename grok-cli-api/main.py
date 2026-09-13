@@ -111,7 +111,7 @@ async def _grok_events(model, effort, prompt):
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd='/tmp',
+        cwd='/workspace',
         env=env,
     )
     err_chunks = []
@@ -188,7 +188,7 @@ def _session_split(session_id):
     """Из истории сессии CLI: (финальный ответ, реплики-рассуждения агента)."""
     if not session_id:
         return None, None
-    path = Path(GROK_CONFIG_DIR) / 'sessions' / quote('/tmp', safe='') / session_id / 'chat_history.jsonl'
+    path = Path(GROK_CONFIG_DIR) / 'sessions' / quote('/workspace', safe='') / session_id / 'chat_history.jsonl'
     for _ in range(3):
         try:
             if path.exists():
@@ -250,7 +250,7 @@ async def _run_grok(prompt: str, model: str | None = None, effort: str | None = 
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd='/tmp',
+        cwd='/workspace',
         env=env,
     )
     out_chunks, err_chunks = [], []
