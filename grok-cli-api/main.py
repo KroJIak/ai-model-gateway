@@ -54,28 +54,41 @@ async def _run_grok(prompt: str, model: str | None = None, effort: str | None = 
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
+        stderr=asyncio.subprocess.PIPE,
         cwd='/tmp',
         env=env,
     )
-    chunks = []
+    out_chunks, err_chunks = [], []
 
-    async def _read():
+    async def _read(stream, sink):
         while True:
-            line = await proc.stdout.readline()
+            line = await stream.readline()
             if not line:
                 break
-            chunks.append(line.decode(errors='replace'))
+            sink.append(line.decode(errors='replace'))
 
     try:
-        await asyncio.wait_for(_read(), timeout=TIMEOUT)
+        await asyncio.wait_for(
+            asyncio.gather(_read(proc.stdout, out_chunks), _read(proc.stderr, err_chunks)),
+            timeout=TIMEOUT,
+        )
     except asyncio.TimeoutError:
         proc.kill()
         raise HTTPException(status_code=504, detail='grok CLI timeout')
     code = await proc.wait()
-    text = ''.join(chunks).strip()
+    text = ''.join(out_chunks).strip()
+    errors = ''.join(err_chunks).strip()
     if code != 0:
-        raise HTTPException(status_code=502, detail=text[-400:] or f'grok CLI exited {code}')
+        # CLI печатает одну ошибку дважды (лог + финальная строка) — дубли убираем
+        detail = errors or text
+        lines, seen = [], set()
+        for line in detail.splitlines():
+            clean = line.strip().removeprefix('Error: ').strip()
+            if not clean or clean in seen:
+                continue
+            seen.add(clean)
+            lines.append(clean)
+        raise HTTPException(status_code=502, detail='\n'.join(lines)[-400:] or f'grok CLI exited {code}')
     return text
 
 
