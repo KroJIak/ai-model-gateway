@@ -22,10 +22,12 @@ SEM = asyncio.Semaphore(int(os.getenv('MAX_CONCURRENCY', '4')))
 
 
 def label_for(model_id):
-    """Имя личности агента = семейство модели (Claude/Grok/Qwen/...)."""
-    m = re.match(r'[a-z]+', model_id.lower())
-    prefix = m.group(0) if m else 'AI'
-    return {'gpt': 'GPT', 'glm': 'GLM', 'deepseek': 'DeepSeek'}.get(prefix, prefix.capitalize())
+    """Имя личности агента: красивое название от провайдера (без компании-префикса),
+    иначе id модели с тире вместо пробелов."""
+    name = provider_models.get_display_name(model_id)
+    if name and '·' in name:
+        name = name.split('·')[-1].strip()
+    return name or model_id.replace('-', ' ')
 
 
 # Полный системный промпт агента CLI, но без упоминания компании-разработчика;
@@ -34,6 +36,38 @@ try:
     AGENT_PROMPT_TEMPLATE = (Path(__file__).parent / 'agent_prompt.txt').read_text(encoding='utf-8')
 except OSError:
     AGENT_PROMPT_TEMPLATE = ''
+
+# Самоадаптация: если стриминг chat_completions у модели нестандартный
+# (ошибка сериализации), секция модели в конфиге CLI переключается на
+# Responses API — без ручных списков.
+_flipped = set()
+CONFIG_TOML = Path(GROK_CONFIG_DIR) / 'config.toml'
+
+
+def _flip_to_responses(model):
+    _flipped.add(model)
+    try:
+        text = CONFIG_TOML.read_text(encoding='utf-8')
+        m = re.search(rf'(\[model\."{re.escape(model)}"\][^\[]*)', text)
+        if m:
+            text = text.replace(
+                m.group(1),
+                m.group(1).replace('api_backend = "chat_completions"', 'api_backend = "responses"'),
+            )
+            CONFIG_TOML.write_text(text, encoding='utf-8')
+    except OSError:
+        pass
+
+
+async def _run_adaptive(model, effort, prompt):
+    try:
+        return await _run_grok(prompt, model, effort)
+    except HTTPException as exc:
+        if (model not in _flipped and exc.status_code == 502
+                and 'serialization error' in str(exc.detail)):
+            _flip_to_responses(model)
+            return await _run_grok(prompt, model, effort)
+        raise
 
 app = FastAPI(title='grok-cli-api')
 
@@ -138,7 +172,7 @@ async def chat_completions(request: Request):
 
     if not stream:
         async with SEM:
-            text = await _run_grok(prompt, model, effort)
+            text = await _run_adaptive(model, effort, prompt)
         return JSONResponse({
             'id': f'chatcmpl-grok-{created}',
             'object': 'chat.completion',
@@ -151,7 +185,7 @@ async def chat_completions(request: Request):
     async def sse():
         try:
             async with SEM:
-                text = await _run_grok(prompt, model, effort)
+                text = await _run_adaptive(model, effort, prompt)
         except HTTPException as exc:
             payload = json.dumps({'error': {'message': exc.detail}}).encode()
             yield b'data: ' + payload + b'\n\n'

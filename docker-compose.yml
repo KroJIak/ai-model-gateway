@@ -22,7 +22,6 @@ services:
       - GROK_BASE_URL=${GROK_BASE_URL:?set in .env}
       - GROK_API_KEY=${GROK_API_KEY:?set in .env}
       - GROK_API_TIMEOUT=${GROK_API_TIMEOUT:?set in .env}
-      - COMPAT_RESPONSES_MODELS=${COMPAT_RESPONSES_MODELS:?set in .env}
     volumes:
       - grok-config:/data/.grok
     healthcheck:

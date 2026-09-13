@@ -6,36 +6,39 @@ set -eu
 GROK_CONFIG_DIR="${GROK_CONFIG_DIR:?GROK_CONFIG_DIR required}"
 GROK_BASE_URL="${GROK_BASE_URL:?GROK_BASE_URL required}"
 GROK_API_KEY="${GROK_API_KEY:?GROK_API_KEY required}"
-# Модели, чей chat_completions-стриминг не соответствует OpenAI (пустой finish_reason
-# и т.п.), идут через Responses API релея. Пробел или запятая — разделитель.
-COMPAT_RESPONSES_MODELS="${COMPAT_RESPONSES_MODELS:-}"
 
 mkdir -p "$GROK_CONFIG_DIR"
 
 CONFIG_PATH="$GROK_CONFIG_DIR/config.toml" \
 GROK_BASE_URL="$GROK_BASE_URL" \
 GROK_API_KEY="$GROK_API_KEY" \
-COMPAT_RESPONSES_MODELS="$COMPAT_RESPONSES_MODELS" \
 python3 - <<'PYEOF'
-import json, os, re, sys, time, urllib.request
+import json, os, sys, time, urllib.request
 
 base_url = os.environ['GROK_BASE_URL'].rstrip('/')
 api_key = os.environ['GROK_API_KEY']
 out_path = os.environ['CONFIG_PATH']
-compat_responses = {m for m in os.environ.get('COMPAT_RESPONSES_MODELS', '').replace(',', ' ').split() if m}
 
 def label_for(mid):
-    """Личность агента = настоящее имя семейства модели (без навязанного Grok)."""
-    m = re.match(r'[a-z]+', mid.lower())
-    prefix = m.group(0) if m else 'AI'
-    return {'gpt': 'GPT', 'glm': 'GLM', 'deepseek': 'DeepSeek'}.get(prefix, prefix.capitalize())
+    """Личность агента: красивое название от провайдера (без компании-префикса),
+    иначе id модели с тире вместо пробелов."""
+    name = names.get(mid, '')
+    if '·' in name:
+        name = name.split('·')[-1].strip()
+    return name.replace('"', '') or mid.replace('-', ' ')
 
 req = urllib.request.Request(base_url + '/models', headers={'Authorization': f'Bearer {api_key}'})
-ids = []
+ids, names = [], {}
 for attempt in range(1, 6):
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
-            ids = [m['id'] for m in json.loads(r.read()).get('data', []) if m.get('id')]
+            data = json.loads(r.read())
+        for m in data.get('data', []):
+            if isinstance(m, dict) and m.get('id'):
+                ids.append(m['id'])
+                name = m.get('display_name')
+                if isinstance(name, str) and name.strip():
+                    names[m['id']] = name.strip()
         break
     except Exception as e:
         print(f'catalog fetch attempt {attempt}/5 failed: {e}', file=sys.stderr)
@@ -47,14 +50,13 @@ ids = [default_model] + [i for i in ids if i != default_model]
 
 lines = ['[models]', f'default = "{default_model}"', '']
 for mid in ids:
-    backend = 'responses' if mid in compat_responses else 'chat_completions'
     lines += [
         f'[model."{mid}"]',
         f'model = "{mid}"',
         f'system_prompt_label = "{label_for(mid)}"',
         f'base_url = "{base_url}"',
         f'api_key = "{api_key}"',
-        f'api_backend = "{backend}"',
+        'api_backend = "chat_completions"',
         'context_window = 131072',
         '',
     ]
