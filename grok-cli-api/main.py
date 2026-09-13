@@ -288,7 +288,9 @@ async def chat_completions(request: Request):
 
     async def sse():
         reasoning_open = False
+        pending = []
         split = _ReasoningSplit()
+        failed = None
 
         def chunk(delta, finish=None):
             return b'data: ' + json.dumps({
@@ -303,34 +305,29 @@ async def chat_completions(request: Request):
             async with SEM:
                 async for kind, data in _run_adaptive_events(model, effort, prompt):
                     if kind == 'thought':
-                        for part in split.feed_thought_parts(data):
+                        flushed = split.feed_thought(data)
+                        if flushed:
                             if not reasoning_open:
                                 reasoning_open = True
                                 yield chunk({'role': 'assistant', 'content': '<think>'})
-                            yield chunk({'content': part})
+                            yield chunk({'content': flushed})
+                        if not reasoning_open:
+                            reasoning_open = True
+                            yield chunk({'role': 'assistant', 'content': '<think>'})
+                        yield chunk({'content': data})
                     elif kind == 'text':
                         split.feed_text(data)
                     elif kind == 'failed':
-                        split.failed_with(data)
+                        failed = data
         except HTTPException as exc:
-            split.failed_with(str(exc.detail))
+            failed = str(exc.detail)
 
-        tail = split.finish_stream(
-            emit_reasoning=lambda part: (
-                (not reasoning_open, None) if False else None
-            ),
-        ) if False else None
-
-        # финализация: хвост pending — ответ; рассуждения закрываем
-        if split.pending:
-            if not reasoning_open:
-                reasoning_open = True
-                yield chunk({'role': 'assistant', 'content': '<think>'})
-            yield chunk({'content': ''.join(split.pending)})
         if reasoning_open:
             yield chunk({'content': '</think>'})
-        if split.failed:
-            yield chunk({'content': split.failed})
+        if split.pending:
+            yield chunk({'content': ''.join(split.pending)})
+        if failed:
+            yield chunk({'content': failed})
         yield chunk({}, 'stop')
         yield b'data: [DONE]\n\n'
 
