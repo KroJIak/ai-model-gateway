@@ -1,5 +1,3 @@
-"""API над Grok CLI. Модели и провайдер — из окружения (env)."""
-
 import asyncio
 import json
 import os
@@ -60,19 +58,6 @@ def _flip_to_responses(model):
         pass
 
 
-async def _run_adaptive(model, effort, prompt):
-    try:
-        return await _run_grok(prompt, model, effort)
-    except HTTPException as exc:
-        if (model not in _flipped and exc.status_code == 502
-                and 'serialization error' in str(exc.detail)):
-            _flip_to_responses(model)
-            return await _run_grok(prompt, model, effort)
-        raise
-
-app = FastAPI(title='grok-cli-api')
-
-
 def _build_prompt(messages) -> str:
     """Flatten an OpenAI message list into a single instruction prompt."""
     parts = []
@@ -94,7 +79,7 @@ def _build_prompt(messages) -> str:
 
 async def _grok_events(model, effort, prompt):
     """Запускает CLI в streaming-json. Выдаёт события:
-    ('thought'|'text', дельта), ('end', session_id), ('failed', текст ошибки)."""
+    ('thought'|'text', дельта), ('end', None), ('failed', текст ошибки)."""
     env = dict(os.environ)
     env['HOME'] = GROK_CONFIG_DIR.rsplit('/.grok', 1)[0] if '/.grok' in GROK_CONFIG_DIR else str(Path.home())
     env.setdefault('TERM', 'dumb')
@@ -111,7 +96,7 @@ async def _grok_events(model, effort, prompt):
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd='/workspace',
+        cwd='/tmp',
         env=env,
     )
     err_chunks = []
@@ -147,7 +132,7 @@ async def _grok_events(model, effort, prompt):
             etype = event.get('type')
             if etype == 'end':
                 await proc.wait()
-                yield 'end', event.get('sessionId')
+                yield 'end', None
                 return
             if etype in ('thought', 'text'):
                 data = event.get('data')
@@ -184,36 +169,6 @@ async def _run_adaptive_events(model, effort, prompt):
         yield kind, data
 
 
-def _session_split(session_id):
-    """Из истории сессии CLI: (финальный ответ, реплики-рассуждения агента)."""
-    if not session_id:
-        return None, None
-    path = Path(GROK_CONFIG_DIR) / 'sessions' / quote('/workspace', safe='') / session_id / 'chat_history.jsonl'
-    for _ in range(3):
-        try:
-            if path.exists():
-                assistant = []
-                for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
-                    try:
-                        m = json.loads(line)
-                    except Exception:
-                        continue
-                    if m.get('role') == 'assistant':
-                        content = m.get('content')
-                        if isinstance(content, str) and content.strip():
-                            assistant.append(content.strip())
-                if assistant:
-                    return assistant[-1], assistant[:-1]
-                return None, None
-        except OSError:
-            pass
-        time.sleep(0.3)
-    return None, None
-
-
-app = FastAPI(title='grok-cli-api')
-
-
 def _build_prompt(messages) -> str:
     """Flatten an OpenAI message list into a single instruction prompt."""
     parts = []
@@ -233,58 +188,54 @@ def _build_prompt(messages) -> str:
     return '\n\n'.join(parts)
 
 
-async def _run_grok(prompt: str, model: str | None = None, effort: str | None = None):
-    env = dict(os.environ)
-    env['HOME'] = GROK_CONFIG_DIR.rsplit('/.grok', 1)[0] if '/.grok' in GROK_CONFIG_DIR else str(Path.home())
-    env.setdefault('TERM', 'dumb')
-    args = [GROK_BIN]
-    if model:
-        args += ['-m', model]
-    if effort:
-        args += ['--effort', effort]
-    if AGENT_PROMPT_TEMPLATE:
-        # компания-разработчик из встроенного шаблона не нужна — только имя модели
-        args += ['--system-prompt-override', AGENT_PROMPT_TEMPLATE.replace('{{LABEL}}', label_for(model or ''))]
-    args += ['-p', prompt]
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd='/workspace',
-        env=env,
-    )
-    out_chunks, err_chunks = [], []
+class _ReasoningSplit:
+    """Делит поток CLI: мышление агента и реплики между инструментами —
+    рассуждения (<think>), текст после последней мысли — финальный ответ."""
 
-    async def _read(stream, sink):
-        while True:
-            line = await stream.readline()
-            if not line:
-                break
-            sink.append(line.decode(errors='replace'))
+    def __init__(self):
+        self.reasoning = ''       # готовый текст рассуждений
+        self.mode = None          # 'thought' | 'narration'
+        self.pending = []         # неклассифицированные текстовые дельты
+        self.failed = None
 
-    try:
-        await asyncio.wait_for(
-            asyncio.gather(_read(proc.stdout, out_chunks), _read(proc.stderr, err_chunks)),
-            timeout=TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        proc.kill()
-        raise HTTPException(status_code=504, detail='grok CLI timeout')
-    code = await proc.wait()
-    text = ''.join(out_chunks).strip()
-    errors = ''.join(err_chunks).strip()
-    if code != 0:
-        # CLI печатает одну ошибку дважды (лог + финальная строка) — дубли убираем
-        detail = errors or text
-        lines, seen = [], set()
-        for line in detail.splitlines():
-            clean = line.strip().removeprefix('Error: ').strip()
-            if not clean or clean in seen:
-                continue
-            seen.add(clean)
-            lines.append(clean)
-        raise HTTPException(status_code=502, detail='\n'.join(lines)[-400:] or f'grok CLI exited {code}')
-    return text
+    def feed_thought(self, data):
+        if self.pending:
+            self._flush_pending_as_narration()
+        if self.mode != 'thought':
+            self.reasoning += ('\n\n' if self.reasoning else '')
+            self.mode = 'thought'
+        self.reasoning += data
+
+    def feed_text(self, data):
+        self.pending.append(data)
+
+    def _flush_pending_as_narration(self):
+        part = ''.join(self.pending)
+        self.pending = []
+        if not part.strip():
+            return
+        if self.mode != 'narration':
+            self.reasoning += ('\n\n' if self.reasoning else '')
+            self.mode = 'narration'
+        self.reasoning += part
+
+    def finish(self):
+        """Финальный ответ = хвост pending после последней мысли;
+        если хвост пуст — последняя реплика агента."""
+        if self.pending:
+            self._flush_pending_as_narration()
+        tail = ''
+        if self.mode == 'narration' and self.reasoning:
+            idx = self.reasoning.rfind('\n\n')
+            tail = self.reasoning[idx + 2:]
+            self.reasoning = self.reasoning[:idx]
+        return tail
+
+    def failed_with(self, detail):
+        self.failed = detail
+
+
+app = FastAPI(title='grok-cli-api')
 
 
 @app.get('/health')
@@ -314,27 +265,18 @@ async def chat_completions(request: Request):
 
     if not stream:
         async with SEM:
-            thought, narration, text_buf = [], [], []
-            session_id, failed = None, None
+            split = _ReasoningSplit()
             async for kind, data in _run_adaptive_events(model, effort, prompt):
                 if kind == 'thought':
-                    thought.append(data)
+                    split.feed_thought(data)
                 elif kind == 'text':
-                    text_buf.append(data)
-                elif kind == 'end':
-                    session_id = data
+                    split.feed_text(data)
                 elif kind == 'failed':
-                    failed = data
-            if failed:
-                raise HTTPException(status_code=502, detail=failed)
-        final, agent_notes = _session_split(session_id)
-        agent_notes = agent_notes or []
-        if final is None:
-            final = ''.join(text_buf).strip()
-        reasoning = ''.join(thought)
-        for part in agent_notes:
-            reasoning += ('\n\n' + part if reasoning else part)
-        text = (f'<think>{reasoning}</think>' if reasoning.strip() else '') + final
+                    split.failed_with(data)
+            if split.failed:
+                raise HTTPException(status_code=502, detail=split.failed)
+            tail = split.finish()
+            text = (f'<think>{split.reasoning}</think>' if split.reasoning else '') + tail
         return JSONResponse({
             'id': f'chatcmpl-grok-{created}',
             'object': 'chat.completion',
@@ -346,8 +288,7 @@ async def chat_completions(request: Request):
 
     async def sse():
         reasoning_open = False
-        text_buf, thought = [], []
-        session_id, failed = None, None
+        split = _ReasoningSplit()
 
         def chunk(delta, finish=None):
             return b'data: ' + json.dumps({
@@ -362,33 +303,34 @@ async def chat_completions(request: Request):
             async with SEM:
                 async for kind, data in _run_adaptive_events(model, effort, prompt):
                     if kind == 'thought':
-                        if not reasoning_open:
-                            reasoning_open = True
-                            yield chunk({'role': 'assistant', 'content': '<think>'})
-                        yield chunk({'content': data})
+                        for part in split.feed_thought_parts(data):
+                            if not reasoning_open:
+                                reasoning_open = True
+                                yield chunk({'role': 'assistant', 'content': '<think>'})
+                            yield chunk({'content': part})
                     elif kind == 'text':
-                        text_buf.append(data)
-                    elif kind == 'end':
-                        session_id = data
+                        split.feed_text(data)
                     elif kind == 'failed':
-                        failed = data
+                        split.failed_with(data)
         except HTTPException as exc:
-            failed = str(exc.detail)
+            split.failed_with(str(exc.detail))
 
-        final, agent_notes = _session_split(session_id)
-        agent_notes = agent_notes or []
-        if agent_notes:
+        tail = split.finish_stream(
+            emit_reasoning=lambda part: (
+                (not reasoning_open, None) if False else None
+            ),
+        ) if False else None
+
+        # финализация: хвост pending — ответ; рассуждения закрываем
+        if split.pending:
             if not reasoning_open:
                 reasoning_open = True
                 yield chunk({'role': 'assistant', 'content': '<think>'})
-            yield chunk({'content': '\n\n' + '\n\n'.join(agent_notes)})
+            yield chunk({'content': ''.join(split.pending)})
         if reasoning_open:
             yield chunk({'content': '</think>'})
-        if failed:
-            yield chunk({'content': failed})
-        answer = final if final is not None else ''.join(text_buf)
-        if answer:
-            yield chunk({'content': answer})
+        if split.failed:
+            yield chunk({'content': split.failed})
         yield chunk({}, 'stop')
         yield b'data: [DONE]\n\n'
 
