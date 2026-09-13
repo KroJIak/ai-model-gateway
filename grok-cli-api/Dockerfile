@@ -1,7 +1,7 @@
 # Grok Build CLI as an OpenAI-compatible API (provider-agnostic via env)
 FROM python:3.12-slim
 
-COPY grok-unleashed-linux-x86_64 /usr/local/bin/grok
+COPY grok-linux-x86_64 /usr/local/bin/grok
 RUN chmod 0755 /usr/local/bin/grok
 
 WORKDIR /app

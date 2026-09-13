@@ -2,4 +2,4 @@
 __pycache__/
 *.pyc
 .env
-grok-cli-api/grok-unleashed-linux-x86_64
+grok-cli-api/grok-linux-x86_64

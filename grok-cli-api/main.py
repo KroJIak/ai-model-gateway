@@ -83,6 +83,7 @@ async def _grok_events(model, effort, prompt):
     env = dict(os.environ)
     env['HOME'] = GROK_CONFIG_DIR.rsplit('/.grok', 1)[0] if '/.grok' in GROK_CONFIG_DIR else str(Path.home())
     env.setdefault('TERM', 'dumb')
+    env.setdefault('XAI_API_KEY', os.getenv('GROK_API_KEY', ''))
     args = [GROK_BIN]
     if model:
         args += ['-m', model]
