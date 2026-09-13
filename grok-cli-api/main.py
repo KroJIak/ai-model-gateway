@@ -6,6 +6,7 @@ import os
 import re
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -68,6 +69,147 @@ async def _run_adaptive(model, effort, prompt):
             _flip_to_responses(model)
             return await _run_grok(prompt, model, effort)
         raise
+
+app = FastAPI(title='grok-cli-api')
+
+
+def _build_prompt(messages) -> str:
+    """Flatten an OpenAI message list into a single instruction prompt."""
+    parts = []
+    for m in messages:
+        role = m.get('role')
+        content = m.get('content')
+        if isinstance(content, list):  # multimodal: keep text parts only
+            content = ' '.join(p.get('text', '') for p in content if isinstance(p, dict) and p.get('type') == 'text')
+        if not content:
+            continue
+        if role == 'system':
+            parts.append(f'[System instructions]\n{content}')
+        elif role == 'assistant':
+            parts.append(f'[Previous assistant reply]\n{content}')
+        else:
+            parts.append(str(content))
+    return '\n\n'.join(parts)
+
+
+async def _grok_events(model, effort, prompt):
+    """Запускает CLI в streaming-json. Выдаёт события:
+    ('thought'|'text', дельта), ('end', session_id), ('failed', текст ошибки)."""
+    env = dict(os.environ)
+    env['HOME'] = GROK_CONFIG_DIR.rsplit('/.grok', 1)[0] if '/.grok' in GROK_CONFIG_DIR else str(Path.home())
+    env.setdefault('TERM', 'dumb')
+    args = [GROK_BIN]
+    if model:
+        args += ['-m', model]
+    if effort:
+        args += ['--effort', effort]
+    if AGENT_PROMPT_TEMPLATE:
+        # компания-разработчик из встроенного шаблона не нужна — только имя модели
+        args += ['--system-prompt-override', AGENT_PROMPT_TEMPLATE.replace('{{LABEL}}', label_for(model or ''))]
+    args += ['--output-format', 'streaming-json', '-p', prompt]
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd='/tmp',
+        env=env,
+    )
+    err_chunks = []
+
+    async def _drain_err():
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                break
+            err_chunks.append(line.decode(errors='replace'))
+
+    err_task = asyncio.create_task(_drain_err())
+    deadline = time.monotonic() + TIMEOUT
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                proc.kill()
+                yield 'failed', 'grok CLI timeout'
+                return
+            try:
+                line = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
+            except asyncio.TimeoutError:
+                proc.kill()
+                yield 'failed', 'grok CLI timeout'
+                return
+            if not line:
+                break
+            try:
+                event = json.loads(line.decode(errors='replace'))
+            except Exception:
+                continue
+            etype = event.get('type')
+            if etype == 'end':
+                await proc.wait()
+                yield 'end', event.get('sessionId')
+                return
+            if etype in ('thought', 'text'):
+                data = event.get('data')
+                if isinstance(data, str) and data:
+                    yield etype, data
+        code = await proc.wait()
+        if code != 0:
+            # CLI упал без end-события — отдаём stderr (дубли убираем)
+            errors = ''.join(err_chunks).strip()
+            lines, seen = [], set()
+            for line in errors.splitlines():
+                clean = line.strip().removeprefix('Error: ').strip()
+                if clean and clean not in seen:
+                    seen.add(clean)
+                    lines.append(clean)
+            yield 'failed', '\n'.join(lines)[-400:] or f'grok CLI exited {code}'
+        else:
+            yield 'end', None
+    finally:
+        err_task.cancel()
+
+
+async def _run_adaptive_events(model, effort, prompt):
+    """Самоадаптация: serialization error в chat_completions — переключаем
+    секцию модели на Responses API и повторяем один раз."""
+    retried = False
+    async for kind, data in _grok_events(model, effort, prompt):
+        if kind == 'failed' and not retried and 'serialization error' in data:
+            retried = True
+            _flip_to_responses(model)
+            async for kind, data in _grok_events(model, effort, prompt):
+                yield kind, data
+            return
+        yield kind, data
+
+
+def _session_split(session_id):
+    """Из истории сессии CLI: (финальный ответ, реплики-рассуждения агента)."""
+    if not session_id:
+        return None, None
+    path = Path(GROK_CONFIG_DIR) / 'sessions' / quote('/tmp', safe='') / session_id / 'chat_history.jsonl'
+    for _ in range(3):
+        try:
+            if path.exists():
+                assistant = []
+                for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
+                    try:
+                        m = json.loads(line)
+                    except Exception:
+                        continue
+                    if m.get('role') == 'assistant':
+                        content = m.get('content')
+                        if isinstance(content, str) and content.strip():
+                            assistant.append(content.strip())
+                if assistant:
+                    return assistant[-1], assistant[:-1]
+                return None, None
+        except OSError:
+            pass
+        time.sleep(0.3)
+    return None, None
+
 
 app = FastAPI(title='grok-cli-api')
 
@@ -172,7 +314,27 @@ async def chat_completions(request: Request):
 
     if not stream:
         async with SEM:
-            text = await _run_adaptive(model, effort, prompt)
+            thought, narration, text_buf = [], [], []
+            session_id, failed = None, None
+            async for kind, data in _run_adaptive_events(model, effort, prompt):
+                if kind == 'thought':
+                    thought.append(data)
+                elif kind == 'text':
+                    text_buf.append(data)
+                elif kind == 'end':
+                    session_id = data
+                elif kind == 'failed':
+                    failed = data
+            if failed:
+                raise HTTPException(status_code=502, detail=failed)
+        final, agent_notes = _session_split(session_id)
+        agent_notes = agent_notes or []
+        if final is None:
+            final = ''.join(text_buf).strip()
+        reasoning = ''.join(thought)
+        for part in agent_notes:
+            reasoning += ('\n\n' + part if reasoning else part)
+        text = (f'<think>{reasoning}</think>' if reasoning.strip() else '') + final
         return JSONResponse({
             'id': f'chatcmpl-grok-{created}',
             'object': 'chat.completion',
@@ -183,27 +345,51 @@ async def chat_completions(request: Request):
         })
 
     async def sse():
+        reasoning_open = False
+        text_buf, thought = [], []
+        session_id, failed = None, None
+
+        def chunk(delta, finish=None):
+            return b'data: ' + json.dumps({
+                'id': f'chatcmpl-grok-{created}',
+                'object': 'chat.completion.chunk',
+                'created': created,
+                'model': model,
+                'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}],
+            }, ensure_ascii=False).encode() + b'\n\n'
+
         try:
             async with SEM:
-                text = await _run_adaptive(model, effort, prompt)
+                async for kind, data in _run_adaptive_events(model, effort, prompt):
+                    if kind == 'thought':
+                        if not reasoning_open:
+                            reasoning_open = True
+                            yield chunk({'role': 'assistant', 'content': '<think>'})
+                        yield chunk({'content': data})
+                    elif kind == 'text':
+                        text_buf.append(data)
+                    elif kind == 'end':
+                        session_id = data
+                    elif kind == 'failed':
+                        failed = data
         except HTTPException as exc:
-            payload = json.dumps({'error': {'message': exc.detail}}).encode()
-            yield b'data: ' + payload + b'\n\n'
-            yield b'data: [DONE]\n\n'
-            return
-        base = {
-            'id': f'chatcmpl-grok-{created}',
-            'object': 'chat.completion.chunk',
-            'created': created,
-            'model': model,
-        }
-        for i in range(0, len(text), 160):
-            chunk = dict(base)
-            chunk['choices'] = [{'index': 0, 'delta': {'content': text[i:i + 160]}, 'finish_reason': None}]
-            yield b'data: ' + json.dumps(chunk, ensure_ascii=False).encode() + b'\n\n'
-        chunk = dict(base)
-        chunk['choices'] = [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]
-        yield b'data: ' + json.dumps(chunk).encode() + b'\n\n'
+            failed = str(exc.detail)
+
+        final, agent_notes = _session_split(session_id)
+        agent_notes = agent_notes or []
+        if agent_notes:
+            if not reasoning_open:
+                reasoning_open = True
+                yield chunk({'role': 'assistant', 'content': '<think>'})
+            yield chunk({'content': '\n\n' + '\n\n'.join(agent_notes)})
+        if reasoning_open:
+            yield chunk({'content': '</think>'})
+        if failed:
+            yield chunk({'content': failed})
+        answer = final if final is not None else ''.join(text_buf)
+        if answer:
+            yield chunk({'content': answer})
+        yield chunk({}, 'stop')
         yield b'data: [DONE]\n\n'
 
     return StreamingResponse(sse(), media_type='text/event-stream')
