@@ -100,6 +100,7 @@ def _compile_backends(cfg):
             'api_key': b.get('api_key', ''),
             'include': b.get('include', []),
             'exclude': b.get('exclude', []),
+            'web_search': bool(b.get('web_search', False)),
         })
     return backends
 
@@ -146,8 +147,8 @@ _levels = {
 }
 
 
-async def _fetch_provider_levels(client):
-    """Нативные уровни провайдера: supported_reasoning_levels в каталоге."""
+async def _fetch_provider_catalog(client):
+    """Каталог провайдера: уровни размышлений и красивые названия моделей."""
     if not (PROVIDER_BASE_URL and PROVIDER_API_KEY):
         return {}
     resp = await client.get(
@@ -159,13 +160,19 @@ async def _fetch_provider_levels(client):
     for m in resp.json().get('data', []):
         if not isinstance(m, dict) or not m.get('id'):
             continue
+        entry = {}
         levels = [
             level.get('effort')
             for level in m.get('supported_reasoning_levels') or []
             if isinstance(level, dict) and isinstance(level.get('effort'), str) and level['effort']
         ]
         if levels:
-            data[m['id']] = levels
+            entry['levels'] = levels
+        name = m.get('display_name')
+        if isinstance(name, str) and name.strip():
+            entry['name'] = name.strip()
+        if entry:
+            data[m['id']] = entry
     return data
 
 
@@ -204,37 +211,42 @@ async def _fetch_modelsdev_levels(client):
     return data
 
 
-async def _source_levels(source, fetcher):
-    """Уровни из одного источника с кэшем; при ошибке — последние известные."""
+async def _source_data(source, fetcher):
+    """Данные одного источника с кэшем; при ошибке — одна повторная попытка,
+    затем последние известные данные."""
     entry = _levels[source]
     async with entry['lock']:
         if time.time() - entry['ts'] < (PROVIDER_LEVELS_TTL if source == 'provider' else MODELSDEV_TTL):
             return entry['data']
-        try:
-            data = await fetcher(_state['client'])
-            entry.update(ts=time.time(), data=data)
-            return data
-        except Exception:
-            return entry['data']  # источник недоступен — работаем на старом кэше
+        for attempt in (1, 2):
+            try:
+                data = await fetcher(_state['client'])
+                entry.update(ts=time.time(), data=data)
+                return data
+            except Exception:
+                if attempt == 1:
+                    await asyncio.sleep(2)  # релей мигает — одна повторная попытка
+    return entry['data']  # источник недоступен — работаем на старом кэше
 
 
-async def _resolve_levels(model_ids):
-    """{id: уровни} — нативно от провайдера, иначе models.dev.
-
-    Уровень 'none' (размышление выключено) убираем, если есть другие.
-    """
+async def _resolve_levels_and_names(model_ids):
+    """{id: {'levels': [...], 'name': ...}} — провайдер, фолбэк models.dev."""
     provider, modelsdev = await asyncio.gather(
-        _source_levels('provider', _fetch_provider_levels),
-        _source_levels('modelsdev', _fetch_modelsdev_levels),
+        _source_data('provider', _fetch_provider_catalog),
+        _source_data('modelsdev', _fetch_modelsdev_levels),
     )
     result = {}
     for model_id in model_ids:
-        levels = provider.get(model_id) or modelsdev.get(model_id)
+        p = provider.get(model_id) or {}
+        levels = p.get('levels') or modelsdev.get(model_id)
         if not levels:
             continue
         if len(levels) > 1 and 'none' in levels:
             levels = [level for level in levels if level != 'none']
-        result[model_id] = levels
+        name = p.get('name')
+        if name and '·' in name:
+            name = name.split('·')[-1].strip()
+        result[model_id] = {'levels': levels, 'name': name}
     return result
 
 
@@ -305,18 +317,21 @@ async def health():
 async def list_models(request: Request):
     _check_auth(request)
     model_map, down = await _resolve()
-    levels_map = await _resolve_levels(model_map.keys())
+    extras = await _resolve_levels_and_names(model_map.keys())
     data = []
     for model_id in sorted(model_map):
         backend = model_map[model_id]
         entry = {'id': model_id, 'object': 'model', 'owned_by': backend['name']}
-        levels = levels_map.get(model_id)
+        extra = extras.get(model_id) or {}
+        levels = extra.get('levels')
         if levels:
             # стандартный формат models.dev: reasoning_options c type=effort
             entry['meta'] = {
                 'reasoning': True,
                 'reasoning_options': [{'type': 'effort', 'values': levels}],
             }
+        if extra.get('name'):
+            entry['name'] = extra['name']
         icon = _icon_data_uri(model_id)
         if icon:
             entry.setdefault('meta', {})['profile_image_url'] = icon
@@ -352,6 +367,12 @@ async def chat_completions(request: Request):
 
     payload = dict(body)
     headers = {'Content-Type': 'application/json', **_headers(backend)}
+
+    # Агентские способности канала: если бэкенд заявлен с web_search и клиент
+    # не прислал свои инструменты, добавляем серверный веб-поиск (как в Codex CLI).
+    if backend.get('web_search') and not payload.get('tools'):
+        payload['tools'] = [{'type': 'web_search'}]
+
     url = f"{backend['base_url']}/chat/completions"
     client = _state['client']
 

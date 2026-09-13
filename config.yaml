@@ -8,6 +8,8 @@ backends:
     api_key: sk-internal-gpt-api-key
     include:
       - "gpt-*"
+    # Канал CLIProxyAPI: серверный веб-поиск как в Codex CLI, без переключателей
+    web_search: true
 
   - name: grok-cli
     enabled: true
