@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -18,6 +19,21 @@ TIMEOUT = float(os.getenv('GROK_API_TIMEOUT', '240'))
 HOST = os.getenv('HOST', '0.0.0.0')
 PORT = int(os.getenv('PORT', '8090'))
 SEM = asyncio.Semaphore(int(os.getenv('MAX_CONCURRENCY', '4')))
+
+
+def label_for(model_id):
+    """Имя личности агента = семейство модели (Claude/Grok/Qwen/...)."""
+    m = re.match(r'[a-z]+', model_id.lower())
+    prefix = m.group(0) if m else 'AI'
+    return {'gpt': 'GPT', 'glm': 'GLM', 'deepseek': 'DeepSeek'}.get(prefix, prefix.capitalize())
+
+
+# Полный системный промпт агента CLI, но без упоминания компании-разработчика;
+# {{LABEL}} заменяется на семейство выбранной модели.
+try:
+    AGENT_PROMPT_TEMPLATE = (Path(__file__).parent / 'agent_prompt.txt').read_text(encoding='utf-8')
+except OSError:
+    AGENT_PROMPT_TEMPLATE = ''
 
 app = FastAPI(title='grok-cli-api')
 
@@ -50,6 +66,9 @@ async def _run_grok(prompt: str, model: str | None = None, effort: str | None = 
         args += ['-m', model]
     if effort:
         args += ['--effort', effort]
+    if AGENT_PROMPT_TEMPLATE:
+        # компания-разработчик из встроенного шаблона не нужна — только имя модели
+        args += ['--system-prompt-override', AGENT_PROMPT_TEMPLATE.replace('{{LABEL}}', label_for(model or ''))]
     args += ['-p', prompt]
     proc = await asyncio.create_subprocess_exec(
         *args,

@@ -7,6 +7,7 @@ RUN chmod 0755 /usr/local/bin/grok
 WORKDIR /app
 COPY main.py .
 COPY provider_models.py .
+COPY agent_prompt.txt .
 RUN pip install --no-cache-dir fastapi uvicorn
 
 COPY docker-entrypoint.sh /usr/local/bin/
